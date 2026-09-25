@@ -1,0 +1,42 @@
+{
+  "measured_at_utc": "2026-09-25T14:11:52.426106+00:00",
+  "gpu": "NVIDIA L4",
+  "gpu_total_memory_bytes": 23659151360,
+  "torch": "2.8.0+cu128",
+  "torch_cuda": "12.8",
+  "cudnn": 91002,
+  "numpy": "2.1.2",
+  "scipy": "1.18.1",
+  "matplotlib": "3.11.2",
+  "seed": 2026,
+  "image_sizes": [
+    32,
+    64,
+    112,
+    128,
+    224,
+    256,
+    272,
+    368,
+    384,
+    448,
+    512
+  ],
+  "batch_sizes": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    33,
+    64,
+    128,
+    229,
+    252,
+    256
+  ],
+  "cudnn_benchmark": false,
+  "cudnn_allow_tf32": false,
+  "matmul_allow_tf32": false
+}
