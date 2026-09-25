@@ -12,6 +12,7 @@ import numpy as np
 from scipy.optimize import least_squares, nnls
 
 from equations import bytes_moved, energy, flops, latency, memory
+from measure import measurement_grid
 
 
 LATENCY_KEYS = ("launch_seconds", "effective_flops_per_second",
@@ -30,6 +31,35 @@ def read_rows(path):
         for key in ("latency_s", "memory_bytes", "energy_j", "flops_profiler"):
             row[key] = float(row[key]) if row.get(key) else float("nan")
     return rows
+
+
+def validate_results(rows, seed):
+    """Reject partial or inconsistent measurements before calling them results."""
+    expected = {(s, b): bool(validation)
+                for s, b, validation in measurement_grid(seed)}
+    actual = {(r["image_size"], r["batch"]): r for r in rows}
+    if len(rows) != len(actual) or set(actual) != set(expected):
+        missing = len(set(expected) - set(actual))
+        extra = len(set(actual) - set(expected))
+        raise ValueError(f"Incomplete grid: expected 132 unique points; "
+                         f"missing={missing}, extra={extra}, duplicate={len(rows)-len(actual)}. "
+                         "Finish measure.py before calibrating.")
+    for key, row in actual.items():
+        if row["is_validation"] != expected[key]:
+            raise ValueError(f"Wrong validation flag at S={key[0]}, B={key[1]}")
+        if row["status"] not in ("OK", "OOM"):
+            raise ValueError(f"Unknown status at S={key[0]}, B={key[1]}")
+        if row["status"] == "OK":
+            for field in ("latency_s", "memory_bytes", "energy_j"):
+                if not np.isfinite(row[field]) or row[field] <= 0:
+                    raise ValueError(f"Missing {field} at S={key[0]}, B={key[1]}; "
+                                     "whole-GPU energy requires working NVML.")
+    for split in (False, True):
+        if not any(r["status"] == "OK" and r["is_validation"] == split
+                   and np.isfinite(r["flops_profiler"]) for r in rows):
+            name = "validation" if split else "training"
+            raise ValueError(f"No profiler FLOPs in {name} points; "
+                             "rerun measurement without --skip-profiler.")
 
 
 def arrays(rows, field):
@@ -94,6 +124,20 @@ def metric_summary(rows, field, predict):
     return answer
 
 
+def largest_errors(rows, field, predict, count=3):
+    candidates = [r for r in rows if r["is_validation"] and r["status"] == "OK"
+                  and np.isfinite(r[field]) and r[field] > 0]
+    ranked = []
+    for r in candidates:
+        predicted = float(predict(r["image_size"], r["batch"]))
+        ranked.append({"image_size": r["image_size"], "batch": r["batch"],
+                       "measured": r[field], "predicted": predicted,
+                       "absolute_percentage_error":
+                       100 * abs(predicted / r[field] - 1)})
+    return sorted(ranked, key=lambda r: r["absolute_percentage_error"],
+                  reverse=True)[:count]
+
+
 def plot_metric(rows, field, predict, title, unit, factor, path):
     sizes = np.array(sorted({r["image_size"] for r in rows}))
     batches = np.array(sorted({r["batch"] for r in rows}))
@@ -156,6 +200,22 @@ def update_readme(summary, environment, path):
         oom = summary["oom_vs_ideal_memory"]
         lines.extend(["", f"OOM cases below the ideal-memory capacity threshold: "
                       f"{oom['oom_below_ideal_capacity']}."])
+    if summary.get("largest_validation_errors"):
+        lines.extend(["", "Largest validation deviations:", "",
+                      "| Quantity | S | B | Measured | Predicted | Absolute error |",
+                      "|---|---:|---:|---:|---:|---:|"])
+        for name, unit in (("memory", "MiB"), ("latency", "ms"),
+                           ("energy", "mJ")):
+            worst = summary["largest_validation_errors"].get(name, [])
+            if not worst:
+                continue
+            r = worst[0]
+            factor = {"memory": 1 / 2**20, "latency": 1e3,
+                      "energy": 1e3}[name]
+            lines.append(f"| {name} ({unit}) | {r['image_size']} | {r['batch']} | "
+                         f"{r['measured'] * factor:.3g} | "
+                         f"{r['predicted'] * factor:.3g} | "
+                         f"{r['absolute_percentage_error']:.1f}% |")
     lines.extend(["", "Figures: [FLOPs](results/figures/flops.png), "
                   "[memory](results/figures/memory.png), "
                   "[latency](results/figures/latency.png), "
@@ -171,8 +231,13 @@ def main():
     parser.add_argument("--results", type=Path, default=Path(__file__).parent / "results")
     args = parser.parse_args()
     rows = read_rows(args.results / "measurements.csv")
+    env_path = args.results / "environment.json"
+    environment = json.loads(env_path.read_text()) if env_path.exists() else {}
+    validate_results(rows, environment.get("seed", 2026))
     theta_latency = fit_latency(rows)
     theta_energy = fit_energy(rows, theta_latency)
+    if theta_energy is None:
+        raise ValueError("Not enough GPU energy measurements to fit theta_energy")
     theta = {"latency": theta_latency, "energy": theta_energy}
     (args.results / "theta.json").write_text(json.dumps(theta, indent=2) + "\n")
 
@@ -184,11 +249,15 @@ def main():
         "latency": metric_summary(rows, "latency_s",
                                   lambda s, b: latency(s, b, theta_latency)),
     }
-    if theta_energy is not None:
-        summary["energy"] = metric_summary(
-            rows, "energy_j", lambda s, b: energy(s, b, theta_energy))
-    env_path = args.results / "environment.json"
-    environment = json.loads(env_path.read_text()) if env_path.exists() else {}
+    summary["energy"] = metric_summary(
+        rows, "energy_j", lambda s, b: energy(s, b, theta_energy))
+    summary["largest_validation_errors"] = {
+        "memory": largest_errors(rows, "memory_bytes", memory),
+        "latency": largest_errors(rows, "latency_s",
+                                  lambda s, b: latency(s, b, theta_latency)),
+        "energy": largest_errors(rows, "energy_j",
+                                 lambda s, b: energy(s, b, theta_energy)),
+    }
     if "gpu_total_memory_bytes" in environment:
         total_bytes = environment["gpu_total_memory_bytes"]
         summary["oom_vs_ideal_memory"] = {
@@ -212,10 +281,9 @@ def main():
                 "Memory (MiB)", 1 / 2**20, figures / "memory.png")
     plot_metric(rows, "latency_s", lambda s, b: latency(s, b, theta_latency),
                 "Forward latency", "Latency (ms)", 1e3, figures / "latency.png")
-    if theta_energy is not None:
-        plot_metric(rows, "energy_j", lambda s, b: energy(s, b, theta_energy),
-                    "Whole-GPU energy per pass", "Energy (mJ)", 1e3,
-                    figures / "energy.png")
+    plot_metric(rows, "energy_j", lambda s, b: energy(s, b, theta_energy),
+                "Whole-GPU energy per pass", "Energy (mJ)", 1e3,
+                figures / "energy.png")
     update_readme(summary, environment, Path(__file__).parent / "README.md")
     print(json.dumps(summary, indent=2))
 
