@@ -1,0 +1,3 @@
+# On H100 use the provider's CUDA-enabled torch/torchvision installation.
+numpy>=1.26
+matplotlib>=3.8
