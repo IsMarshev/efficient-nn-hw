@@ -30,4 +30,6 @@
 - `best.pt` — веса checkpoint с лучшей validation accuracy (не checkpoint для возобновления оптимизатора);
 - `summary.json` — test-метрики выбранной модели.
 
-Общая папка содержит `summary.csv`, `aggregate.csv` и PNG-графики. Для просмотра сохранённого запуска вызовите `plot_results(Path("runs/zero-init/<timestamp>"))`.
+Общая папка содержит `summary.csv`, `aggregate.csv`, `figure5-stable-rank.png/.pdf` (компоновка 2×3 в стиле Figure 5 статьи) и отдельные `<architecture>-training-curves.png/.pdf` с loss/accuracy. PNG сохраняются в 300 dpi, PDF — векторные. Для просмотра сохранённого запуска вызовите `plot_results(Path("runs/zero-init/<timestamp>"))`.
+
+В Figure 5 строки соответствуют ResNet-18/50, столбцы — группам 2/3/4. Здесь обе сети обучаются на CIFAR-10 (в статье нижний ряд — ImageNet). По умолчанию показаны средние линии; `plot_results(..., show_std=True)` добавляет полосы разброса. При отсутствии ResNet-50 нижний ряд помечается `No recorded run`. Для более подробных кривых задайте `rank_every=1` до обучения. Функции построения и их вызов разделены на две ячейки, поэтому можно обновлять графики сохранённого или ещё выполняющегося запуска без повторного обучения.
