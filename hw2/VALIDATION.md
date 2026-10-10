@@ -1,29 +1,18 @@
-# Проверка перед H100-запуском
+# Выполненные проверки
 
-Проверено локально 10 октября 2026 года. Полного запуска на H100 и подтверждённой accuracy около 95% пока нет.
+10 октября 2026, локальная CPU-платформа macOS arm64.
 
-## Что исправлено при аудите
+```bash
+python -m unittest -v test_zero test_figure6
+python run_zero.py smoke --device cpu --root runs/reproduction-smoke
+python run_zero.py gradients --config configs/smoke.json --root runs/figure8-smoke --steps 8
+python run_zero.py compression --config configs/smoke.json --root runs/reproduction-smoke --test-limit 64 --keep .9 .7 .5 --ranks 20 5
+python run_zero.py alternatives --config configs/smoke.json --methods rezero fixup skipinit constnet zero_no_bn --root runs/alternatives-smoke
+python run_zero.py benchmark --config configs/main.json --device cpu --root runs/local-benchmark
+```
 
-- Основной протокол использует 50 000 train, без дополнительного holdout 5 000.
-- Итог берётся с последней эпохи, без выбора лучшего checkpoint по test.
-- Для двухчасовой аренды оставлены ResNet-18 / CIFAR-10, два метода и один seed. ResNet-50 / ImageNet не заменяется CIFAR-10 под тем же названием.
-- Число эпох согласуется для обоих методов до обучения по измеренной скорости; изменение бюджета явно отражается в конфигурации.
-- Checkpoint содержит также momentum SGD; прерванная эпоха повторяется с тем же epoch-seed.
-- Опубликованный ориентир, измеренный результат и незавершённый запуск различаются в файлах результатов.
+10 tests: initialization all parameters; stable ranks; scheduler/statistics; explicit alternative blocks and finite updates; exact resume; actual CIFAR RNG isolation and worker count; pruning independent points; Tucker full reconstruction/channel ranks; full executable Tucker stride/padding/dilation/bias; reduced unequal channel ranks vs equivalent dense kernel.
 
-## Проверки
+Notebook исполнен через nbclient; все analysis cells прошли, 8 research panels и3 дополнительных training panels сохранены. Notebook не запускает обучение. Smoke gradients: 48 rows, шесть групп, batch hashes совпадают. Full-rank Tucker на всех трёх 512-channel kernels прошёл scale-aware FP32 tolerance; relative Frobenius errors <1.9e-6.
 
-`python -m unittest -v test_zero`: **4 теста прошли**.
-
-1. Формула Hadamard, центр свёртки, нулевые последние Conv / единичные BN, независимость ZerO от seed для обеих архитектур.
-2. Границы warmup/cosine и настройки пресетов.
-3. Планировщик общего бюджета и отказ при недостаточном времени.
-4. Прерывание после первой эпохи и resume: итоговые веса на CPU в точности совпадают с непрерывным двухэпоховым запуском; сохранён optimizer state.
-
-Архив CIFAR-10 получен с зеркала, проверен по MD5 `c58f30108f718f92721af3b95e74349a`; torchvision проверил 50 000 train и 10 000 test. Реальный smoke: 512 train / 256 test, две эпохи для каждого метода, CPU. Завершились обучение, checkpoint, JSON/CSV, PNG/PDF, повторное построение графиков и повторный запуск CLI через resume.
-
-Smoke проверяет исполнение кода, не качество итоговой модели. CUDA/BF16 и производительность H100 локально проверить невозможно; начальный benchmark в `h100_2h` выполняет реальные forward/backward/evaluation на арендованной GPU до основного обучения.
-
-## Оставшаяся неопределённость
-
-В [статье v3](https://arxiv.org/pdf/2110.12661v3) и [официальном репозитории](https://github.com/jiaweizzhao/ZerO-initialization) нет полного ResNet-рецепта. Batch size, cosine, аугментации, нормализация, CIFAR-stem и развёртка ядра для измерения ранга являются явно выбранными деталями реализации. BF16 и один seed — дополнительные уступки двухчасовому бюджету. Поэтому это проверяемое приближение, а не заявление о точном воспроизведении.
+Полные 200-epoch эксперименты, 400-step Figure8, полный test compression и CUDA/ConstNet* **не выполнены**. Это перечислено в REPORT.md. CPU benchmark и реальные результаты находятся в `runs/`; их отсутствие при чистом checkout не заменяется фиктивными данными.

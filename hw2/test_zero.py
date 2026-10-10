@@ -1,119 +1,112 @@
-"""Focused correctness checks; no network, GPU or training dataset required."""
-import os
-os.environ.setdefault("MPLBACKEND", "Agg")
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
-from dataclasses import replace
 from pathlib import Path
-
+from dataclasses import replace
 import torch
+from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
-from run_zero import load_notebook
-
+from zero_experiments.config import Config
+from zero_experiments.models import create_model, METHODS
+from zero_experiments.initialization import zero_init_
+from zero_experiments.validation import check_initializations
+from zero_experiments.training import train_one, learning_rate_at
+from zero_experiments.ranks import stable_rank
+from zero_experiments.data import make_loaders, set_epoch, batch_hash
+from zero_experiments.results import interval
 
 class ZerOTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.m = load_notebook()
 
-    def test_formula_and_residuals(self):
-        m = self.m
-        h = m.hadamard_matrix(8)
-        self.assertTrue(torch.equal(h @ h.T, 8 * torch.eye(8)))
-        w = torch.empty(5, 3, 3, 3)
-        m.zero_init_(w)
-        self.assertTrue(torch.equal(w[:, :, 1, 1], h[:5, :3] * 0.5))
-        self.assertEqual(torch.count_nonzero(w).item(), 15)
-        for cls in (m.ResNet18, m.ResNet50):
-            torch.manual_seed(0)
-            a = cls(num_classes=10, init="zero", cifar_stem=True)
-            torch.manual_seed(123)
-            b = cls(num_classes=10, init="zero", cifar_stem=True)
-            self.assertTrue(all(torch.equal(x, y) for x, y in zip(a.state_dict().values(), b.state_dict().values())))
-            for block in a.modules():
-                if isinstance(block, (m.ResBlock, m.Bottleneck)):
-                    conv = block.conv2 if isinstance(block, m.ResBlock) else block.conv3
-                    bn = block.bn2 if isinstance(block, m.ResBlock) else block.bn3
-                    self.assertEqual(torch.count_nonzero(conv.weight).item(), 0)
-                    self.assertTrue(torch.all(bn.weight == 1))
-            del a, b
+    def test_initialization_all_parameters(self):
+        self.assertTrue(check_initializations()['zero_seed_invariance'])
+        for shape in ((3,3),(3,5),(7,9)):
+            w = torch.empty(shape); zero_init_(w)
+            self.assertTrue(torch.equal(w,torch.eye(*shape)))
+        with self.assertRaises(ValueError):
+            zero_init_(torch.empty(3,3,2,2))
 
-    def test_schedule_and_presets(self):
-        m = self.m
-        cfg = m.h100_config
-        self.assertEqual(cfg.methods, ("zero", "kaiming"))
-        self.assertEqual(cfg.seeds, (0,))
-        self.assertEqual(cfg.val_size, 0)
-        self.assertEqual(cfg.epochs, 200)
-        self.assertEqual(m.paper_config.precision, "fp32")
-        rates = [m.learning_rate_at(i, 2000, 100, .1) for i in range(2000)]
-        self.assertAlmostEqual(rates[0], .01)
-        self.assertAlmostEqual(rates[99], .1)
-        self.assertAlmostEqual(rates[100], .1)
-        self.assertAlmostEqual(rates[-1], 0)
-        self.assertTrue(all(a <= b + 1e-12 for a, b in zip(rates[:99], rates[1:100])))
-        self.assertTrue(all(a >= b - 1e-12 for a, b in zip(rates[100:-1], rates[101:])))
+    def test_ranks(self):
+        self.assertEqual(stable_rank(torch.zeros(4,4)),0)
+        self.assertEqual(stable_rank(torch.eye(4)),4)
+        self.assertAlmostEqual(stable_rank(torch.diag(torch.tensor([3.,1.]))),10/9)
+        self.assertAlmostEqual(stable_rank(torch.ones(3,8)),1)
 
-    def test_budget_plan_is_shared_and_insufficient_budget_rejected(self):
-        m = self.m
-        cfg = replace(m.h100_config, device="cpu", precision="fp32", min_epochs=50)
-        # Контролируемые timings проверяют планировщик без привязки к скорости CI.
-        fake_epoch = {"seconds": 1.0, "batches": 10, "images": 1280}
-        loaders = (list(range(100)), None, list(range(100)))
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.object(m, "make_loaders", return_value=loaders), \
-                 patch.object(m, "create_model", return_value=torch.nn.Linear(2, 2)), \
-                 patch.object(m, "run_epoch", return_value=fake_epoch), \
-                 patch.object(m, "stable_ranks", return_value={}):
-                planned = m.benchmark_runtime(cfg, Path(tmp), m.time.monotonic() + 6000)
-                self.assertGreaterEqual(planned.epochs, 50)
-                self.assertLess(planned.epochs, 200)
-                self.assertEqual(planned.epochs % 10, 0)
-                self.assertEqual(planned.methods, cfg.methods)
-                plan = json.loads((Path(tmp) / "runtime_plan.json").read_text())
-                self.assertEqual(plan["chosen_epochs"], planned.epochs)
-                with self.assertRaises(RuntimeError):
-                    m.benchmark_runtime(cfg, Path(tmp), m.time.monotonic() + 60)
+    def test_schedule_statistics(self):
+        self.assertEqual(learning_rate_at(0,1000,100,.1),.01)
+        self.assertAlmostEqual(learning_rate_at(99,1000,100,.1),.1)
+        self.assertEqual(learning_rate_at(0,1000,0,.1),.1)
+        self.assertAlmostEqual(learning_rate_at(999,1000,100,.1),0)
+        self.assertEqual(interval([1.,2.,3.])['std'],1.)
+        self.assertIsNone(interval([1.])['std'])
 
-    def test_interruption_resume_and_last_epoch_selection(self):
-        m = self.m
-        cfg = replace(m.smoke_config, batch_size=4, epochs=2, log_every=0, channels_last=False, device="cpu")
-        torch.manual_seed(17)
-        dataset = TensorDataset(torch.randn(8, 3, 32, 32), torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]))
+    def test_explicit_alternative_blocks_finite_updates(self):
+        for method in METHODS:
+            model = create_model(method,0)
+            if method in ('rezero','fixup','skipinit','zero_no_bn'):
+                self.assertFalse(any(isinstance(m,nn.BatchNorm2d) for m in model.modules()))
+            block = model.layer1[0]
+            if method in ('rezero','skipinit'):
+                self.assertEqual(block.alpha.item(),0)
+            if method=='skipinit':
+                self.assertTrue(hasattr(block,'merge_bias'))
+            if method=='fixup':
+                self.assertEqual(block.scale.item(),1)
+                self.assertEqual(model.fc.weight.count_nonzero(),0)
+            opt = torch.optim.SGD(model.parameters(),lr=.01)
+            g = torch.Generator().manual_seed(2)
+            x,y = torch.randn(4,3,32,32,generator=g),torch.tensor([0,1,2,3])
+            for _ in range(3):
+                opt.zero_grad(set_to_none=True)
+                loss = nn.functional.cross_entropy(model(x),y)
+                self.assertTrue(torch.isfinite(loss))
+                loss.backward()
+                self.assertTrue(all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters()))
+                opt.step()
+            if method=='zero':
+                self.assertGreater(model.layer1[0].conv2.weight.count_nonzero(),0)
+            del model,opt
+
+    def test_resume_full_states(self):
+        cfg = Config(methods=('zero',),seeds=(0,),epochs=2,warmup_epochs=1,batch_size=4,
+                     save_rank_weights=False,cpu_threads=2,grad_steps=3)
+        g = torch.Generator().manual_seed(19)
+        ds = TensorDataset(torch.randn(8,3,32,32,generator=g),torch.arange(8))
         def loaders():
-            return (DataLoader(dataset, batch_size=4, shuffle=True, generator=torch.Generator()),
-                    None, DataLoader(dataset, batch_size=4))
+            return DataLoader(ds,batch_size=4,shuffle=True,generator=torch.Generator()),DataLoader(ds,batch_size=4)
         with tempfile.TemporaryDirectory() as tmp:
-            whole, interrupted = Path(tmp) / "whole", Path(tmp) / "interrupted"
-            reference = m.train_one(cfg, "resnet18", "zero", 0, whole, loaders=loaders())
-            original_run_epoch = m.run_epoch
-            def interrupt(*args, **kwargs):
-                if len(args) > 5 and args[3] is not None and args[5] == 1:
-                    raise TimeoutError("simulated time limit")
-                return original_run_epoch(*args, **kwargs)
-            m.run_epoch = interrupt
-            try:
-                with self.assertRaises(TimeoutError):
-                    m.train_one(cfg, "resnet18", "zero", 0, interrupted, loaders=loaders())
-            finally:
-                m.run_epoch = original_run_epoch
-            self.assertFalse((interrupted / "summary.json").exists())
-            checkpoint = torch.load(interrupted / "last.pt", weights_only=True)
-            self.assertEqual(checkpoint["epoch"], 1)
-            resumed = m.train_one(cfg, "resnet18", "zero", 0, interrupted, loaders=loaders())
-            self.assertEqual(reference["test_accuracy"], resumed["test_accuracy"])
-            a = torch.load(whole / "last.pt", weights_only=True)
-            b = torch.load(interrupted / "last.pt", weights_only=True)
-            self.assertTrue(all(torch.equal(a["model_state"][k], b["model_state"][k]) for k in a["model_state"]))
-            self.assertEqual(a["epoch"], 2)
-            self.assertTrue(a["optimizer_state"]["state"])
-            self.assertEqual(resumed["checkpoint_selection"], "last_epoch")
-            history = json.loads((interrupted / "history.json").read_text())
-            self.assertEqual([r["epoch"] for r in history], [0, 1, 2])
+            a,b = Path(tmp)/'whole',Path(tmp)/'resume'
+            train_one(cfg,'zero',0,a,loaders=loaders())
+            train_one(cfg,'zero',0,b,loaders=loaders(),stop_after=1)
+            train_one(cfg,'zero',0,b,resume=True,loaders=loaders())
+            ca,cb = torch.load(a/'last.pt',weights_only=True),torch.load(b/'last.pt',weights_only=True)
+            self.assertTrue(all(torch.equal(v,cb['model_state'][k]) for k,v in ca['model_state'].items()))
+            self.assertEqual(ca['scheduler_state'],cb['scheduler_state'])
+            self.assertTrue(torch.equal(ca['rng_state']['torch'],cb['rng_state']['torch']))
+            self.assertTrue(all(torch.equal(v['momentum_buffer'],cb['optimizer_state']['state'][k]['momentum_buffer'])
+                                for k,v in ca['optimizer_state']['state'].items()))
+            self.assertEqual(json.loads((a/'gradients.json').read_text()),json.loads((b/'gradients.json').read_text()))
+            with self.assertRaises(ValueError):
+                train_one(replace(cfg,lr=.2),'zero',0,b,resume=True,loaders=loaders())
 
+    def test_real_cifar_rng_isolation(self):
+        if not Path('data/cifar-10-batches-py').exists():
+            self.skipTest('Local CIFAR unavailable')
+        cfg = Config(batch_size=4,train_limit=8,test_limit=4)
+        loader,_ = make_loaders(cfg,7)
+        set_epoch(loader,7,0)
+        first = [batch_hash(x,y) for x,y in loader]
+        create_model('xavier',581); torch.rand(100)
+        set_epoch(loader,7,0)
+        self.assertEqual(first,[batch_hash(x,y) for x,y in loader])
+        worker_cfg = replace(cfg,num_workers=2)
+        workers,_ = make_loaders(worker_cfg,7)
+        set_epoch(workers,7,0)
+        self.assertEqual(first,[batch_hash(x,y) for x,y in workers])
+        set_epoch(loader,7,1)
+        self.assertNotEqual(first,[batch_hash(x,y) for x,y in loader])
 
-if __name__ == "__main__":
+if __name__=='__main__':
     unittest.main()

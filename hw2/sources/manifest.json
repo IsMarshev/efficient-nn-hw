@@ -1,0 +1,14 @@
+{
+  "paper": "2110.12661v3",
+  "paper_date": "2022-11-04",
+  "official_commit": "cf2bf5d7d967958b3bb232755b288d97239896a8",
+  "fixup_commit": "f3fa449fbb8906ccb7143cea822f8b964b3d9258",
+  "constnet_commit": "92c4c8abb60b699ba17d22a80419e25938ffb075",
+  "sha256": {
+    "official-LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "2110.12661v3.pdf": "ebbc32e065b4480f1b411aa00f141743e0e5d3d8154f7c4748063c75fd6b6fd8",
+    "official-README.md": "7f30ee9335597d4ba5c3184de427bef185fb574100bf45ac52f05313124cf2c4",
+    "legacy-zero-init.ipynb": "a37d467440f676db9c2d91700b5651577b1c2d8552e16084e8d0a87527771b8a",
+    "official-example_mnist.ipynb": "f4d9b3f8ead67770dea11c271860daccfbf5bdee560f52dee8a5f860a47b057c"
+  }
+}

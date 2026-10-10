@@ -1,66 +1,108 @@
-# ZerO: запуск на H100 за двухчасовую аренду
+# ZerO Initialization — ResNet-18 / CIFAR-10
 
-Код моделей, инициализации, обучения и графиков находится в [`zero-init.ipynb`](zero-init.ipynb). [`run_zero.py`](run_zero.py) читает помеченные ячейки этого же ноутбука: отдельной копии модели нет.
+Обучение и все измерения находятся в **Python-модулях** `zero_experiments/`. [`zero-init.ipynb`](zero-init.ipynb) только читает результаты, строит графики и анализирует их. Импорт модулей не начинает обучение; Python не исполняет ячейки notebook.
 
-## Запуск на GPU
+Реализованы восемь панелей: **Figure 5, верхний ряд (3), Figure 6 (3), Figure 8 (2)**. Локально выполнены smoke-проверки; полная серия 3×10×200 epochs ещё не обучена. CUDA недоступна. Подробности источников и всех предположений: [`protocol.md`](protocol.md). Итог локальной работы: [`REPORT.md`](REPORT.md).
 
-Загрузите папку `hw2` в GPU-среду с установленными **CUDA-версиями PyTorch и torchvision** (рекомендуется готовый PyTorch-образ провайдера). Рабочий каталог — `hw2`.
+В официальном репозитории нет CIFAR ResNet/training/compression code, поэтому точную архитектуру и весь протокол авторов восстановить нельзя. Это рабочая, явно документированная реконструкция. Статья v3 и официальный commit зафиксированы в `sources/manifest.json`; прежний notebook сохранён в `sources/legacy-zero-init.ipynb`.
+
+## Установка и проверки
+
+Рабочая папка — `hw2`. Установите PyTorch/torchvision для вашего CPU/CUDA, затем:
 
 ```bash
-nvidia-smi
-python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__); assert torch.cuda.is_available(); print(torch.cuda.get_device_name())"
 python -m pip install -r requirements.txt
-python run_zero.py --preset h100_2h --device cuda > training.log 2>&1
+python -m unittest -v test_zero test_figure6
+python run_zero.py check-init --root runs/checks
+python run_zero.py inspect --root runs/checks
 ```
 
-Для просмотра из другого терминала: `tail -f training.log`. CUDA PyTorch из образа переустанавливать не нужно. `requirements.txt` устанавливает только библиотеки анализа. Предусмотрено 8 загрузчиков данных; при малом числе CPU задайте `--num-workers 4` **до начала запуска**.
+`inspect` сохраняет полную модель, формы всех операций и число параметров. Основная BN ResNet-18: **11 173 962 параметра**, CIFAR stem 3×3/stride1, без maxpool, BasicBlock [2,2,2,2], channels 64/128/256/512, adaptive pool, Linear512→10. Не используется ImageNet `torchvision.models.resnet18`.
 
-`h100_2h`:
-
-- ResNet-18 / CIFAR-10, ZerO и Kaiming, один seed;
-- цель — 200 эпох на каждый метод, все 50 000 train и 10 000 test;
-- SGD: LR 0.1, momentum 0.9, weight decay 1e-4;
-- 10 эпох warmup от 0.01, далее cosine;
-- BF16 autocast, FP32-параметры/SGD-состояние, channels-last;
-- 110 минут от старта скрипта; начальный замер и загрузка входят в бюджет;
-- замер скорости автоматически выбирает **одинаковое** число эпох для обоих методов, максимум 200 и минимум 50. Если минимум не помещается, обучение не начинается;
-- каждая полная эпоха сохраняет checkpoint; при исчерпании времени есть возможность продолжить.
-
-Это оценка времени с запасом, а не гарантия производительности конкретной аренды. Фактический план записывается в `runtime_plan.json`; `run_config.json` определяет реальное число эпох и расписание. Для фиксированных 200 эпох используйте `--no-auto-fit`: если времени не хватит, потребуется resume. Не меняйте число эпох после начала обучения — это изменит cosine schedule.
-
-## Соответствие статье
-
-Используется [arXiv:2110.12661v3](https://arxiv.org/pdf/2110.12661v3), Algorithms 1–2. ZerO задаёт частичные identity/Hadamard-преобразования в центре ядер и обнуляет последнюю Conv остаточного блока; BatchNorm γ=1, β=0. Полное обнуление сети и `zero_init_residual` — другие режимы.
-
-В [официальном репозитории](https://github.com/jiaweizzhao/ZerO-initialization) опубликован только MNIST-пример, без рецепта ResNet. Batch size, decay, часть архитектурных и preprocessing-деталей не раскрыты. Наши batch=128, cosine, CIFAR-stem 3×3, crop/flip, нормализация и развёртка ядра для stable rank зафиксированы явно. Формула нормировки Hadamard берётся из PDF; она отличается от MNIST-примера авторов.
-
-Полный train используется без дополнительного holdout. Test мониторится, но **checkpoint всегда последней эпохи**: нет выбора максимума по test. Гиперпараметры не подбираются под test-метрику. В `aggregate.csv` опубликованные ориентиры и измерения находятся в разных колонках.
-
-Похожая accuracy — проверяемая цель, а не обещание. Два часа не рассчитаны на 10 seed и ImageNet/ResNet-50. Для полного сравнения с оценкой разброса есть `--preset paper_cifar` (3 метода × 10 seed, FP32, без лимита); `cifar_both` добавляет ResNet-50 на CIFAR-10 и не воспроизводит её ImageNet-эксперимент.
-
-## Результаты и продолжение
-
-Скрипт печатает каталог `runs/zero-init/<timestamp>/`. **До окончания аренды скачайте весь этот каталог и `training.log`.** Внутри:
-
-- `runtime_plan.json`, `run_config.json` — замер скорости и согласованный бюджет;
-- `<model>-<method>-seed<N>/history.json` / `.csv` — реальные метрики по эпохам;
-- `last.pt` — веса, momentum оптимизатора, конфигурация, номер полной эпохи;
-- `summary.json` — итог только завершённого запуска; `status.json` показывает остановку по времени;
-- `aggregate.csv` — сравнение измеренного test error с отдельным ориентиром статьи;
-- `figure5-stable-rank.png/.pdf`, `resnet18-training-curves.png/.pdf` — графики из логов.
+## Локальная проверка всей цепочки
 
 ```bash
-python run_zero.py --resume runs/zero-init/<timestamp> --device cuda --budget-minutes 110
-python run_zero.py --plot-only runs/zero-init/<timestamp>
+python run_zero.py smoke --device cpu --root runs/reproduction-smoke
+python run_zero.py gradients --config configs/smoke.json --root runs/figure8-smoke --steps 8
+python run_zero.py compression --config configs/smoke.json --root runs/reproduction-smoke --test-limit 64 --keep .9 .7 .5 --ranks 20 5
+python run_zero.py report --root runs/reproduction-smoke --gradient-root runs/figure8-smoke
 ```
 
-Resume сохраняет старое расписание. Незаконченная эпоха пересчитывается из последней полной; seed аугментаций и перестановки зависит от номера эпохи. При остановке по бюджету CLI возвращает код 2, при полном завершении — 0.
+Эти команды уже выполнены в данном workspace. Для повторного smoke выберите новый `--root` либо используйте `--resume`. Smoke: три метода, seed0, две эпохи, 128 train /64 test images, batch16. Figure 8 smoke: 8 шагов каждой из шести групп. Compression smoke: исходные коротко обученные checkpoints, 64 test images, сокращённые сетки. Низкая accuracy smoke не характеризует качество методов.
 
-## Локальная проверка
+Откройте `zero-init.ipynb` и выполните все ячейки. В первой ячейке задаются `ROOT` и `GRADIENT_ROOT`. Notebook сохраняет PNG/PDF в `<ROOT>/plots/`; CSV/JSON и отчёт — в `<ROOT>/`. Не выполняет обучение или сжатие.
+
+## Полные эксперименты на CUDA
 
 ```bash
-python -m unittest -v test_zero
-python run_zero.py --preset smoke --device cpu
+python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name())"
+python run_zero.py benchmark --config configs/main.json --device cuda --root runs/gpu-benchmark
+
+# Один метод / seed, полный датасет и 200 эпох:
+python run_zero.py train --config configs/main.json --methods zero --seeds 0 --device cuda --num-workers 4 --root runs/single-zero
+
+# Основная серия: ZerO, Kaiming, Xavier × seeds 0..9:
+python run_zero.py seeds --config configs/main.json --device cuda --num-workers 4 --root runs/main
+
+# Отдельные шесть запусков для Figure 8, ровно 400 шагов каждого:
+python run_zero.py gradients --config configs/figure8.json --device cuda --num-workers 4 --root runs/figure8 --steps 400
+
+# Все три панели Figure 6 из исходных last.pt, на полном test:
+python run_zero.py compression --config configs/main.json --device cuda --num-workers 4 --root runs/main
+
+# Альтернативы, включая ConstNet*, на nondeterministic CUDA:
+python run_zero.py alternatives --config configs/alternatives.json --num-workers 4 --root runs/alternatives
+
+python run_zero.py report --root runs/main --gradient-root runs/figure8
+python run_zero.py report --root runs/alternatives
 ```
 
-Тесты проверяют формулу ZerO, остаточные блоки, warmup и идентичность непрерывного / возобновлённого обучения на CPU. Smoke действительно обучает на 512 изображениях CIFAR-10 две эпохи, но его качество не сравнимо со статьёй. H100/CUDA/BF16 должны быть проверены на арендованной машине начальным замером.
+Для notebook полной серии задайте `ROOT = BASE / "runs/main"`, `GRADIENT_ROOT = BASE / "runs/figure8"` и выполните все ячейки: это построит все 8 панелей из ваших измерений. До этого отсутствующие результаты обозначаются, кривые не дорисовываются.
+
+`main.json`: SGD LR .1, momentum .9, WD 1e-4, warmup 10 epochs от .01. Batch128, 200 epochs и cosine после линейного warmup — зафиксированные детали реконструкции. WD применяется ко всем trainable tensors. Инициализации Conv: Kaiming normal fan_out/ReLU; Xavier normal gain1. FP32, TF32=False, strict determinism.
+
+Strict и original разделены `--determinism strict|original`. ConstNet всегда strict; ConstNet* требует original и CUDA, разрешает nondeterministic cuDNN, без искусственного шума/dropout. Современный cuDNN не гарантирует воспроизведение symmetry-breaking старой GPU-платформы. Альтернативные методы меняют блоки/нормализацию/скаляры, а не только init-function. Реконструкции описаны отдельно в протоколе. `zero_no_bn` — дополнительный режим.
+
+## Сжатие и ранги отдельно
+
+```bash
+python run_zero.py ranks --device cuda --root runs/main
+python run_zero.py pruning --device cuda --root runs/main --keep .9 .85 .8 .75 .7 .65 .6 .55 .5
+python run_zero.py tucker --device cuda --root runs/main --layer layer4.1.conv2 --ranks 60 50 40 30 25 20 15 10 5
+```
+
+Stable rank: полное ядро `[Cout,Cin*kH*kW]`, identity не вычитается. Слои траекторий — `layer2.0.conv1`, `layer3.0.conv1`, `layer4.0.conv1`; нулевому ядру условно присваивается 0. Каждый epoch сохраняет эти ядра. Figure 6 слева: stem +16 residual Conv, без projection shortcuts. Отдельного алгоритма Kernel Rank у авторов нет; используем stable rank по §5. Это не numerical rank MNIST.
+
+Pruning: local magnitude внутри Conv/Linear, включая projections, исключая BN/bias. Маски независимы, fine-tuning отсутствует. Записываются mask slots и фактические nonzeros; график показывает actual remaining percent.
+
+Tucker-2: HOSVD+5 HOOI, `(r_out,r_in)=(r,r)`, 512-channel `layer4.1.conv2`. Реальная факторизованная операция `1×1 → 3×3 → 1×1`. Полные ранги проверяются на одинаковом входе; FP32 absolute tolerance `5e-6 * max(1,max|output|)`, relative tolerance `2e-4`; отдельно relative Frobenius error. Сохраняются параметры и Conv/Linear MACs на изображение 32×32. Latency не измеряется, ускорение не заявляется.
+
+## Resume, файлы и статистика
+
+```bash
+python run_zero.py seeds --config configs/main.json --device cuda --num-workers 4 --root runs/main --resume
+```
+
+При resume сохраняйте исходные config/methods/seeds/num-workers. Допускается смена device, data_dir, cpu_threads; другая платформа не обещает битовую идентичность. `last.pt` содержит model, optimizer momentum, scheduler step, RNG Python/NumPy/Torch/CUDA/MPS, history/rank rows и metadata. Незаконченная эпоха пересчитывается от последней полной. Расписание/число эпох изменять нельзя.
+
+Структура результатов:
+
+```text
+<ROOT>/run_config.json, summary.csv, aggregate.csv/json, paired.csv, report.md
+<ROOT>/resnet18-<method>-seed<N>/
+  environment.json, config.json, summary.json
+  history.csv/json, ranks.csv, gradients.csv/json
+  last.pt, best_observed_test.pt
+  rank_weights/epoch-000.pt ... epoch-200.pt
+<ROOT>/compression/resnet18-<method>-seed<N>/
+  metadata.json, kernel_ranks.csv, pruning.csv, tucker.csv
+  tucker_full_rank_check.json
+<ROOT>/plots/*.png, *.pdf
+<GRADIENT_ROOT>/gradients.csv/json, *-metadata.json
+```
+
+Данные, checkpoints и локальные runs не добавляются в git. Сохраняйте весь каталог результатов для переноса на другую машину. Для сырой истории выбранных ядер требуется около **1,24 GB на один 200-epoch run** /37,3 GB для 30 runs, плюс checkpoints. `benchmark` оценивает скорость, память и диск до полного обучения; модель замера не используется в экспериментах.
+
+Начальные ZerO параметры одинаковы при разных seed. Random init, DataLoader shuffle и augmentation используют независимые RNG domains. Crop/flip детерминированы по run seed/epoch/original image index и не зависят от worker count. Figure 8 сравнивает SHA256 реально аугментированных batches между всеми шестью группами.
+
+Last test error — основной результат. Best observed test отдельно, не гиперпараметрический tuning. Sample std ddof=1 и 95% Student-t CI, paired differences по одинаковым seeds, std ratio. При n=1 std/CI undefined. Конфигурации с разными протоколами не объединяются. В таблицах published reference хранится отдельно от measured error. Малое различие средних и низкий stable rank не доказывают превосходство или механизм GLRL.

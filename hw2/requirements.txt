@@ -1,3 +1,9 @@
-# On H100 use the provider's CUDA-enabled torch/torchvision installation.
+# Install the correct CPU/CUDA build of torch/torchvision for your hardware first.
+torch>=2.2
+torchvision>=0.17
 numpy>=1.26
+scipy>=1.11
 matplotlib>=3.8
+nbformat>=5.9
+nbclient>=0.9
+ipykernel>=6.0
