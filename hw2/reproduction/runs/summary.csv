@@ -1,0 +1,4 @@
+method,seed,architecture,status,epochs,target_epochs,test_accuracy,test_error,test_loss,best_observed_test,checkpoint_selection,train_images,test_images,smoke,train_seconds,test_seconds,rank_seconds,process_peak_rss_mb,cuda_peak_allocated_mb
+zero,0,resnet18,complete,200,200,86.71,13.290000000000003,0.64804443359375,"{'accuracy': 86.91, 'epoch': 195}",last_epoch,50000,10000,False,1975.467901673168,149.95440040156245,27.389023203402758,4030.44140625,1272.4970703125
+kaiming,0,resnet18,complete,200,200,95.11,4.890000000000006,0.2219885009765625,"{'accuracy': 95.16, 'epoch': 197}",last_epoch,50000,10000,False,2007.3821633569896,184.1258704997599,29.183560732752085,4961.6015625,1272.4970703125
+xavier,0,resnet18,complete,200,200,94.98,5.020000000000002,0.2202458251953125,"{'accuracy': 95.05, 'epoch': 190}",last_epoch,50000,10000,False,2014.2627181746066,182.34530495479703,28.27334138378501,5105.21875,1272.4970703125

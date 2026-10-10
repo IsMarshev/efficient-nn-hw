@@ -1,0 +1,9 @@
+{
+  "max_abs_error": 1.33514404296875e-05,
+  "atol": 2.147268056869507e-05,
+  "rtol": 0.0002,
+  "output_scale": 4.294536113739014,
+  "relative_frobenius_error": 2.0152560864517e-06,
+  "r_out": 512,
+  "r_in": 512
+}

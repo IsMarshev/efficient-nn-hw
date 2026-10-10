@@ -1,0 +1,15 @@
+{
+  "source": "Executed mlp_ZeRO.ipynb outputs, cells 13 and 15",
+  "source_sha256": "d6399593db255fa387b66ee9b11d657ea6fbfc6c6339691633d189ffec8f2e67",
+  "epochs": 20,
+  "batch_size": 64,
+  "lr": 0.1,
+  "scheduler": "StepLR(step_size=12, gamma=0.7)",
+  "architecture": "784 -> 784 -> width -> width -> 10",
+  "loss": "NLL",
+  "initialization": "Algorithm 1 v3: sqrt(2/N)",
+  "rank": "numerical rank(l3.weight - I), tol=1e-4",
+  "seed_note": "Training resets seed=1 after model construction; random initialization seed was not fixed before construction.",
+  "rank_csv_available": false,
+  "checkpoints_available": false
+}

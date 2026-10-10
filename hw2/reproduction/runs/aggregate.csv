@@ -1,0 +1,4 @@
+method,n,mean,std,ci_low,ci_high,std_ddof,ci_method,seeds,smoke,paper_reference_error,paper_reference_std,difference_pp
+kaiming,1,4.890000000000006,,,,1,Student-t 95%,0,False,5.15,0.13,-0.25999999999999446
+xavier,1,5.020000000000002,,,,1,Student-t 95%,0,False,5.23,0.16,-0.2099999999999982
+zero,1,13.290000000000003,,,,1,Student-t 95%,0,False,5.13,0.08,8.160000000000004
